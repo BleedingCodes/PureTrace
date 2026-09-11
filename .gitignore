@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.pyo
+dist/
+build/
+*.egg-info/
+.eggs/
+*.whl
+*.ptrchk
+*.exr
+*.png
+!renders/cornell-preview.png
+.venv/
+venv/
+.DS_Store
+Thumbs.db
+.pytest_cache/
