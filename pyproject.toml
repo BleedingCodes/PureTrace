@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "puretrace-renderer"
+version = "1.0.0"
+description = "A pure-Python, CPU-only, physically based path tracer"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Michael Rivera", email = "mr.mainbytelabs@gmail.com"}]
+dependencies = []
+
+[project.scripts]
+puretrace = "puretrace.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

@@ -1,0 +1,61 @@
+{
+  "render": {
+    "width": 640,
+    "height": 480,
+    "samples_per_pixel": 256,
+    "max_depth": 12,
+    "tile_size": 16,
+    "samples_per_pass": 4
+  },
+  "camera": {
+    "look_from": [4.5, 2.8, 5.8],
+    "look_at": [0.0, 0.75, 0.0],
+    "vertical_fov": 38,
+    "aperture": 0.04,
+    "focus_distance": 7.6
+  },
+  "environment": {
+    "color": [0.025, 0.04, 0.075],
+    "strength": 1.0
+  },
+  "materials": {
+    "floor": {
+      "base_color": {
+        "type": "checker",
+        "even": [0.72, 0.72, 0.72],
+        "odd": [0.08, 0.09, 0.12],
+        "scale": 10,
+        "use_uv": true
+      },
+      "roughness": 0.45
+    },
+    "softbox": {
+      "emission": [1.0, 0.86, 0.68],
+      "emission_strength": 24
+    }
+  },
+  "objects": [
+    {
+      "type": "quad",
+      "origin": [-5, 0, -5],
+      "u": [10, 0, 0],
+      "v": [0, 0, 10],
+      "material": "floor"
+    },
+    {
+      "type": "obj",
+      "file": "mesh-demo.obj",
+      "rotate_y": -18,
+      "scale": 1.0,
+      "translate": [0, 0, 0]
+    },
+    {
+      "type": "quad",
+      "origin": [-1.5, 4.5, -1.2],
+      "u": [3, 0, 0],
+      "v": [0, 0, 2.4],
+      "material": "softbox"
+    }
+  ]
+}
+
