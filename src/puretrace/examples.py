@@ -173,4 +173,3 @@ def build_example(name: str, aspect: float) -> tuple[Scene, Camera]:
         return EXAMPLES[name](aspect)
     except KeyError as error:
         raise ValueError(f"Unknown example {name!r}; choose from {', '.join(EXAMPLES)}") from error
-
