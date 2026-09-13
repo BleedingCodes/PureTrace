@@ -200,4 +200,3 @@ def load_scene(path: str | Path) -> LoadedScene:
     )
     scene.commit(camera.shutter_open, camera.shutter_close)
     return LoadedScene(scene, camera, render)
-
