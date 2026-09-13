@@ -64,4 +64,3 @@ class Camera:
             self._lower_left + self._horizontal * s + self._vertical * t - self._origin - offset
         ).normalized()
         return Ray(self._origin + offset, direction, time)
-
