@@ -184,4 +184,3 @@ def load_obj(
                 )
             )
     return OBJResult(tuple(triangles), materials)
-
