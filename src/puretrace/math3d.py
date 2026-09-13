@@ -25,6 +25,13 @@ class Vec2:
     def __mul__(self, value: float) -> "Vec2":
         return Vec2(self.x * value, self.y * value)
 
+    def __rmul__(self, value: float) -> "Vec2":
+        return Vec2(self.x * value, self.y * value)
+
+    def __truediv__(self, value: float) -> "Vec2":
+        inv = 1.0 / value
+        return Vec2(self.x * inv, self.y * inv)
+
 
 @dataclass(frozen=True, slots=True)
 class Vec3:
@@ -238,4 +245,3 @@ def offset_point(point: Vec3, normal: Vec3, direction: Vec3) -> Vec3:
     sign = 1.0 if normal.dot(direction) >= 0.0 else -1.0
     scale = 1.0e-5 * max(1.0, abs(point.x), abs(point.y), abs(point.z))
     return point + normal * (sign * scale)
-
