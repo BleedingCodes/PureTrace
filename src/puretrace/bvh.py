@@ -136,4 +136,3 @@ class BVHNode:
             t_max = left_hit.t
         right_hit = self.right.hit(ray, t_min, t_max) if self.right is not None else None
         return right_hit if right_hit is not None else left_hit
-
