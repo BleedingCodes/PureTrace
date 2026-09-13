@@ -45,6 +45,8 @@ class RenderConfig:
         for name in ("width", "height", "samples_per_pixel", "max_depth", "tile_size", "samples_per_pass"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
+        if self.workers < 0:
+            raise ValueError("workers must be 0 (auto) or a positive integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,7 +236,11 @@ def load_checkpoint(path: str | Path) -> RenderState:
     raw = zlib.decompress(data[offset + metadata_size :])
     values = array("d")
     values.frombytes(raw)
-    if sys.byteorder != "little":
+    saved_byteorder = metadata.get("byteorder", "little")
+    # Data is stored as little-endian on disk (byteswapped at write time when the
+    # writing machine was big-endian).  Swap if the current machine's endianness
+    # differs from the machine that wrote the checkpoint.
+    if saved_byteorder != sys.byteorder:
         values.byteswap()
     expected = metadata["width"] * metadata["height"] * 3
     if len(values) != expected:
