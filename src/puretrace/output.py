@@ -139,4 +139,3 @@ def write_exr(
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(bytes(result))
-
