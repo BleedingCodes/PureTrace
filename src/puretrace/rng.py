@@ -70,4 +70,3 @@ class RNG:
             radius = sy
             theta = PI / 2.0 - (PI / 4.0) * (sx / sy)
         return Vec2(radius * math.cos(theta), radius * math.sin(theta))
-
