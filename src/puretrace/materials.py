@@ -1,218 +1,247 @@
-"""Disney-inspired metallic/roughness materials and BSDF sampling."""
+"""Small allocation-conscious vector, ray, and sampling helpers."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import math
 
-from .math3d import PI, ONE, Vec2, Vec3, ZERO, clamp, reflect, refract, to_world
-from .rng import RNG
-from .textures import SolidColor, Texture, as_texture
+
+EPSILON = 1.0e-7
+PI = math.pi
+TAU = math.tau
 
 
 @dataclass(frozen=True, slots=True)
-class BSDFSample:
+class Vec2:
+    x: float = 0.0
+    y: float = 0.0
+
+    def __add__(self, other: "Vec2") -> "Vec2":
+        return Vec2(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other: "Vec2") -> "Vec2":
+        return Vec2(self.x - other.x, self.y - other.y)
+
+    def __mul__(self, value: float) -> "Vec2":
+        return Vec2(self.x * value, self.y * value)
+
+    def __rmul__(self, value: float) -> "Vec2":
+        return Vec2(self.x * value, self.y * value)
+
+    def __truediv__(self, value: float) -> "Vec2":
+        inv = 1.0 / value
+        return Vec2(self.x * inv, self.y * inv)
+
+
+@dataclass(frozen=True, slots=True)
+class Vec3:
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+
+    def __add__(self, other: "Vec3") -> "Vec3":
+        return Vec3(self.x + other.x, self.y + other.y, self.z + other.z)
+
+    def __sub__(self, other: "Vec3") -> "Vec3":
+        return Vec3(self.x - other.x, self.y - other.y, self.z - other.z)
+
+    def __neg__(self) -> "Vec3":
+        return Vec3(-self.x, -self.y, -self.z)
+
+    def __mul__(self, other: float | "Vec3") -> "Vec3":
+        if isinstance(other, Vec3):
+            return Vec3(self.x * other.x, self.y * other.y, self.z * other.z)
+        return Vec3(self.x * other, self.y * other, self.z * other)
+
+    def __rmul__(self, other: float | "Vec3") -> "Vec3":
+        return self * other
+
+    def __truediv__(self, value: float) -> "Vec3":
+        inv = 1.0 / value
+        return Vec3(self.x * inv, self.y * inv, self.z * inv)
+
+    def __getitem__(self, axis: int) -> float:
+        if axis == 0:
+            return self.x
+        if axis == 1:
+            return self.y
+        if axis == 2:
+            return self.z
+        raise IndexError(axis)
+
+    def __iter__(self):
+        yield self.x
+        yield self.y
+        yield self.z
+
+    def dot(self, other: "Vec3") -> float:
+        return self.x * other.x + self.y * other.y + self.z * other.z
+
+    def cross(self, other: "Vec3") -> "Vec3":
+        return Vec3(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x * other.z,
+            self.x * other.y - self.y * other.x,
+        )
+
+    def length_squared(self) -> float:
+        return self.dot(self)
+
+    def length(self) -> float:
+        return math.sqrt(self.length_squared())
+
+    def normalized(self) -> "Vec3":
+        length = self.length()
+        if length <= EPSILON:
+            return Vec3()
+        return self / length
+
+    def max_component(self) -> float:
+        return max(self.x, self.y, self.z)
+
+    def min_component(self) -> float:
+        return min(self.x, self.y, self.z)
+
+    def luminance(self) -> float:
+        return 0.2126 * self.x + 0.7152 * self.y + 0.0722 * self.z
+
+    def is_finite(self) -> bool:
+        return math.isfinite(self.x) and math.isfinite(self.y) and math.isfinite(self.z)
+
+    def near_zero(self) -> bool:
+        return abs(self.x) < EPSILON and abs(self.y) < EPSILON and abs(self.z) < EPSILON
+
+    def clamped(self, low: float = 0.0, high: float = 1.0) -> "Vec3":
+        return Vec3(
+            min(high, max(low, self.x)),
+            min(high, max(low, self.y)),
+            min(high, max(low, self.z)),
+        )
+
+
+ZERO = Vec3(0.0, 0.0, 0.0)
+ONE = Vec3(1.0, 1.0, 1.0)
+
+
+@dataclass(frozen=True, slots=True)
+class Ray:
+    origin: Vec3
     direction: Vec3
-    weight: Vec3
-    pdf: float
-    delta: bool = False
-    null: bool = False
+    time: float = 0.0
+
+    def at(self, t: float) -> Vec3:
+        return self.origin + self.direction * t
 
 
-def _fresnel_schlick(cosine: float, f0: Vec3) -> Vec3:
-    factor = (1.0 - clamp(cosine, 0.0, 1.0)) ** 5
-    return f0 + (ONE - f0) * factor
+@dataclass(frozen=True, slots=True)
+class AABB:
+    minimum: Vec3
+    maximum: Vec3
+
+    @classmethod
+    def empty(cls) -> "AABB":
+        inf = math.inf
+        return cls(Vec3(inf, inf, inf), Vec3(-inf, -inf, -inf))
+
+    @classmethod
+    def from_points(cls, a: Vec3, b: Vec3) -> "AABB":
+        return cls(
+            Vec3(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z)),
+            Vec3(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z)),
+        )
+
+    def union(self, other: "AABB") -> "AABB":
+        return AABB(
+            Vec3(
+                min(self.minimum.x, other.minimum.x),
+                min(self.minimum.y, other.minimum.y),
+                min(self.minimum.z, other.minimum.z),
+            ),
+            Vec3(
+                max(self.maximum.x, other.maximum.x),
+                max(self.maximum.y, other.maximum.y),
+                max(self.maximum.z, other.maximum.z),
+            ),
+        )
+
+    def padded(self, amount: float = 1.0e-5) -> "AABB":
+        d = Vec3(amount, amount, amount)
+        return AABB(self.minimum - d, self.maximum + d)
+
+    def centroid(self) -> Vec3:
+        return (self.minimum + self.maximum) * 0.5
+
+    def extent(self) -> Vec3:
+        return self.maximum - self.minimum
+
+    def surface_area(self) -> float:
+        d = self.extent()
+        return 2.0 * (d.x * d.y + d.y * d.z + d.z * d.x)
+
+    def longest_axis(self) -> int:
+        d = self.extent()
+        if d.x >= d.y and d.x >= d.z:
+            return 0
+        return 1 if d.y >= d.z else 2
+
+    def hit(self, ray: Ray, t_min: float, t_max: float) -> bool:
+        for axis in range(3):
+            direction = ray.direction[axis]
+            origin = ray.origin[axis]
+            lo = self.minimum[axis]
+            hi = self.maximum[axis]
+            if abs(direction) < EPSILON:
+                if origin < lo or origin > hi:
+                    return False
+                continue
+            inv = 1.0 / direction
+            near = (lo - origin) * inv
+            far = (hi - origin) * inv
+            if inv < 0.0:
+                near, far = far, near
+            t_min = max(t_min, near)
+            t_max = min(t_max, far)
+            if t_max <= t_min:
+                return False
+        return True
 
 
-def _dielectric_fresnel(cosine: float, eta_i: float, eta_t: float) -> float:
-    cosine = clamp(cosine, -1.0, 1.0)
-    entering = cosine > 0.0
-    if not entering:
-        eta_i, eta_t = eta_t, eta_i
-        cosine = abs(cosine)
-    sin_t = eta_i / eta_t * math.sqrt(max(0.0, 1.0 - cosine * cosine))
-    if sin_t >= 1.0:
-        return 1.0
-    cos_t = math.sqrt(max(0.0, 1.0 - sin_t * sin_t))
-    parallel = ((eta_t * cosine) - (eta_i * cos_t)) / (
-        (eta_t * cosine) + (eta_i * cos_t)
-    )
-    perpendicular = ((eta_i * cosine) - (eta_t * cos_t)) / (
-        (eta_i * cosine) + (eta_t * cos_t)
-    )
-    return 0.5 * (parallel * parallel + perpendicular * perpendicular)
+def lerp(a: Vec3, b: Vec3, t: float) -> Vec3:
+    return a * (1.0 - t) + b * t
 
 
-def _ggx_distribution(no_h: float, alpha: float) -> float:
-    a2 = alpha * alpha
-    denominator = no_h * no_h * (a2 - 1.0) + 1.0
-    return a2 / max(1.0e-12, PI * denominator * denominator)
+def clamp(value: float, low: float, high: float) -> float:
+    return min(high, max(low, value))
 
 
-def _smith_g1(no_v: float, alpha: float) -> float:
-    if no_v <= 0.0:
-        return 0.0
-    a2 = alpha * alpha
-    return 2.0 * no_v / (no_v + math.sqrt(a2 + (1.0 - a2) * no_v * no_v))
+def reflect(direction: Vec3, normal: Vec3) -> Vec3:
+    return direction - normal * (2.0 * direction.dot(normal))
 
 
-def _sample_ggx(normal: Vec3, alpha: float, rng: RNG) -> Vec3:
-    u1 = rng.random()
-    u2 = rng.random()
-    a2 = alpha * alpha
-    cos_theta = math.sqrt((1.0 - u1) / max(1.0e-12, 1.0 + (a2 - 1.0) * u1))
-    sin_theta = math.sqrt(max(0.0, 1.0 - cos_theta * cos_theta))
-    phi = 2.0 * PI * u2
-    return to_world(Vec3(sin_theta * math.cos(phi), sin_theta * math.sin(phi), cos_theta), normal)
+def refract(direction: Vec3, normal: Vec3, eta: float) -> Vec3:
+    cos_theta = min((-direction).dot(normal), 1.0)
+    perpendicular = (direction + normal * cos_theta) * eta
+    parallel = normal * -math.sqrt(max(0.0, 1.0 - perpendicular.length_squared()))
+    return perpendicular + parallel
 
 
-@dataclass(slots=True)
-class PrincipledMaterial:
-    base_color: Texture | Vec3 | tuple[float, float, float] = field(
-        default_factory=lambda: SolidColor(Vec3(0.8, 0.8, 0.8))
-    )
-    metallic: float = 0.0
-    roughness: float = 0.5
-    transmission: float = 0.0
-    ior: float = 1.5
-    emission: Texture | Vec3 | tuple[float, float, float] = field(
-        default_factory=lambda: SolidColor(ZERO)
-    )
-    emission_strength: float = 0.0
-    opacity: float = 1.0
-    two_sided: bool = False
-    name: str = "material"
+def orthonormal_basis(normal: Vec3) -> tuple[Vec3, Vec3]:
+    """Frisvad-style stable basis around a unit normal."""
+    if normal.z < -0.9999999:
+        return Vec3(0.0, -1.0, 0.0), Vec3(-1.0, 0.0, 0.0)
+    a = 1.0 / (1.0 + normal.z)
+    b = -normal.x * normal.y * a
+    tangent = Vec3(1.0 - normal.x * normal.x * a, b, -normal.x)
+    bitangent = Vec3(b, 1.0 - normal.y * normal.y * a, -normal.y)
+    return tangent, bitangent
 
-    def __post_init__(self) -> None:
-        self.base_color = as_texture(self.base_color)
-        self.emission = as_texture(self.emission)
-        self.metallic = clamp(float(self.metallic), 0.0, 1.0)
-        self.roughness = clamp(float(self.roughness), 0.001, 1.0)
-        self.transmission = clamp(float(self.transmission), 0.0, 1.0)
-        self.ior = max(1.0001, float(self.ior))
-        self.opacity = clamp(float(self.opacity), 0.0, 1.0)
 
-    @property
-    def is_emissive(self) -> bool:
-        return self.emission_strength > 0.0
+def to_world(local: Vec3, normal: Vec3) -> Vec3:
+    tangent, bitangent = orthonormal_basis(normal)
+    return tangent * local.x + bitangent * local.y + normal * local.z
 
-    def color(self, uv: Vec2, point: Vec3) -> Vec3:
-        return self.base_color.value(uv, point)
 
-    def emitted(self, uv: Vec2, point: Vec3, front_face: bool = True) -> Vec3:
-        if self.emission_strength <= 0.0 or (not front_face and not self.two_sided):
-            return ZERO
-        return self.emission.value(uv, point) * self.emission_strength
-
-    def _opaque_lobes(self, uv: Vec2, point: Vec3) -> tuple[Vec3, Vec3, float]:
-        base = self.color(uv, point)
-        dielectric_f0 = ((self.ior - 1.0) / (self.ior + 1.0)) ** 2
-        f0 = Vec3(dielectric_f0, dielectric_f0, dielectric_f0) * (1.0 - self.metallic)
-        f0 = f0 + base * self.metallic
-        diffuse = base * (1.0 - self.metallic)
-        diffuse_energy = diffuse.luminance()
-        specular_energy = max(0.02, f0.luminance())
-        if diffuse_energy <= 1.0e-8:
-            specular_probability = 1.0
-        else:
-            specular_probability = clamp(
-                specular_energy / (specular_energy + diffuse_energy), 0.1, 0.9
-            )
-        return diffuse, f0, specular_probability
-
-    def evaluate(self, wo: Vec3, wi: Vec3, normal: Vec3, uv: Vec2, point: Vec3) -> Vec3:
-        no_v = max(0.0, normal.dot(wo))
-        no_l = max(0.0, normal.dot(wi))
-        if no_v <= 0.0 or no_l <= 0.0 or self.opacity <= 0.0:
-            return ZERO
-        # Delta transmission is sampled separately and has no finite solid-angle value.
-        opaque_weight = 1.0 - self.transmission
-        if opaque_weight <= 0.0:
-            return ZERO
-        diffuse, f0, _ = self._opaque_lobes(uv, point)
-        half_vector = (wo + wi).normalized()
-        if half_vector.near_zero():
-            return diffuse * (opaque_weight / PI)
-        no_h = max(0.0, normal.dot(half_vector))
-        vo_h = max(0.0, wo.dot(half_vector))
-        alpha = max(0.002, self.roughness * self.roughness)
-        d = _ggx_distribution(no_h, alpha)
-        g = _smith_g1(no_v, alpha) * _smith_g1(no_l, alpha)
-        fresnel = _fresnel_schlick(vo_h, f0)
-        specular = fresnel * (d * g / max(1.0e-8, 4.0 * no_v * no_l))
-        # Fresnel-reflected energy is unavailable to the diffuse substrate.
-        diffuse_brdf = diffuse * (ONE - fresnel) * (1.0 / PI)
-        return (diffuse_brdf + specular) * opaque_weight * self.opacity
-
-    def pdf(self, wo: Vec3, wi: Vec3, normal: Vec3, uv: Vec2, point: Vec3) -> float:
-        no_l = max(0.0, normal.dot(wi))
-        no_v = max(0.0, normal.dot(wo))
-        opaque_probability = self.opacity * (1.0 - self.transmission)
-        if no_l <= 0.0 or no_v <= 0.0 or opaque_probability <= 0.0:
-            return 0.0
-        _, _, specular_probability = self._opaque_lobes(uv, point)
-        diffuse_pdf = no_l / PI
-        half_vector = (wo + wi).normalized()
-        if half_vector.near_zero():
-            specular_pdf = 0.0
-        else:
-            alpha = max(0.002, self.roughness * self.roughness)
-            no_h = max(0.0, normal.dot(half_vector))
-            vo_h = max(1.0e-8, wo.dot(half_vector))
-            specular_pdf = _ggx_distribution(no_h, alpha) * no_h / (4.0 * vo_h)
-        mixture = (1.0 - specular_probability) * diffuse_pdf + specular_probability * specular_pdf
-        return opaque_probability * mixture
-
-    def sample(
-        self,
-        wo: Vec3,
-        normal: Vec3,
-        uv: Vec2,
-        point: Vec3,
-        front_face: bool,
-        rng: RNG,
-    ) -> BSDFSample | None:
-        # Alpha transparency is a null event; matching selection probabilities
-        # cancel the lobe coefficient in the Monte Carlo weight.
-        if rng.random() > self.opacity:
-            return BSDFSample(-wo, ONE, 1.0 - self.opacity, True, True)
-
-        if self.transmission > 0.0 and rng.random() < self.transmission:
-            incident = -wo
-            eta_i, eta_t = (1.0, self.ior) if front_face else (self.ior, 1.0)
-            eta = eta_i / eta_t
-            cos_theta = min(1.0, wo.dot(normal))
-            sin2_theta = max(0.0, 1.0 - cos_theta * cos_theta)
-            cannot_refract = eta * eta * sin2_theta > 1.0
-            fresnel = _dielectric_fresnel(cos_theta, eta_i, eta_t)
-            if cannot_refract or rng.random() < fresnel:
-                direction = reflect(incident, normal).normalized()
-                weight = ONE
-            else:
-                direction = refract(incident, normal, eta).normalized()
-                weight = self.color(uv, point)
-            return BSDFSample(direction, weight, self.opacity * self.transmission, True)
-
-        opaque_probability = self.opacity * (1.0 - self.transmission)
-        if opaque_probability <= 0.0:
-            return None
-        _, _, specular_probability = self._opaque_lobes(uv, point)
-        if rng.random() < specular_probability:
-            alpha = max(0.002, self.roughness * self.roughness)
-            half_vector = _sample_ggx(normal, alpha, rng)
-            if wo.dot(half_vector) < 0.0:
-                half_vector = -half_vector
-            direction = reflect(-wo, half_vector).normalized()
-            if direction.dot(normal) <= 0.0:
-                return None
-        else:
-            direction = to_world(rng.cosine_hemisphere(), normal).normalized()
-        pdf = self.pdf(wo, direction, normal, uv, point)
-        if pdf <= 1.0e-12:
-            return None
-        value = self.evaluate(wo, direction, normal, uv, point)
-        weight = value * (max(0.0, normal.dot(direction)) / pdf)
-        # GGX remains a finite-density lobe even at very low roughness. Only
-        # ideal dielectric reflection/refraction and alpha null events are
-        # marked delta for MIS purposes.
-        return BSDFSample(direction, weight, pdf, False)
+def offset_point(point: Vec3, normal: Vec3, direction: Vec3) -> Vec3:
+    sign = 1.0 if normal.dot(direction) >= 0.0 else -1.0
+    scale = 1.0e-5 * max(1.0, abs(point.x), abs(point.y), abs(point.z))
+    return point + normal * (sign * scale)
