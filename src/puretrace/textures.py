@@ -441,4 +441,3 @@ def as_texture(value: Texture | Vec3 | tuple[float, float, float] | list[float])
     if isinstance(value, Vec3):
         return SolidColor(value)
     return SolidColor(Vec3(float(value[0]), float(value[1]), float(value[2])))
-
