@@ -1,72 +1,135 @@
-"""Fast deterministic random numbers, independent of process scheduling."""
+"""Scene graph, light sampling, and homogeneous participating medium."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import math
+from typing import TYPE_CHECKING
 
-from .math3d import PI, TAU, Vec2, Vec3
+from .math3d import Ray, Vec3, ZERO
+from .rng import RNG
+from .textures import EnvironmentMap
 
-
-MASK64 = (1 << 64) - 1
-
-
-def splitmix64(value: int) -> int:
-    value = (value + 0x9E3779B97F4A7C15) & MASK64
-    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & MASK64
-    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & MASK64
-    return value ^ (value >> 31)
+if TYPE_CHECKING:
+    from .geometry import HitRecord, Primitive
 
 
-def pixel_seed(base: int, x: int, y: int, sample: int) -> int:
-    value = base & MASK64
-    value = splitmix64(value ^ ((x + 1) * 0xD6E8FEB86659FD93))
-    value = splitmix64(value ^ ((y + 1) * 0xA5A3564E27F8862B))
-    return splitmix64(value ^ ((sample + 1) * 0x9E3779B97F4A7C15))
+@dataclass(frozen=True, slots=True)
+class LightSample:
+    direction: Vec3
+    radiance: Vec3
+    pdf: float
+    distance: float
 
 
-class RNG:
-    __slots__ = ("state",)
+@dataclass(frozen=True, slots=True)
+class HomogeneousMedium:
+    density: float
+    albedo: Vec3
+    anisotropy: float
+    max_distance: float = 100.0
 
-    def __init__(self, seed: int):
-        self.state = splitmix64(seed)
 
-    def uint64(self) -> int:
-        x = self.state
-        x ^= x >> 12
-        x ^= (x << 25) & MASK64
-        x ^= x >> 27
-        self.state = x & MASK64
-        return (x * 0x2545F4914F6CDD1D) & MASK64
+@dataclass(slots=True)
+class Scene:
+    environment: EnvironmentMap = field(default_factory=EnvironmentMap)
+    medium: HomogeneousMedium | None = None
+    _primitives: list["Primitive"] = field(default_factory=list, init=False, repr=False)
+    _lights: list["Primitive"] = field(default_factory=list, init=False, repr=False)
+    _bvh: object = field(default=None, init=False, repr=False)
 
-    def random(self) -> float:
-        return (self.uint64() >> 11) * (1.0 / (1 << 53))
+    def add(self, *primitives: "Primitive") -> None:
+        for primitive in primitives:
+            self._primitives.append(primitive)
 
-    def uniform(self, low: float, high: float) -> float:
-        return low + (high - low) * self.random()
-
-    def cosine_hemisphere(self) -> Vec3:
-        r = math.sqrt(self.random())
-        phi = TAU * self.random()
-        x = r * math.cos(phi)
-        y = r * math.sin(phi)
-        return Vec3(x, y, math.sqrt(max(0.0, 1.0 - x * x - y * y)))
-
-    def uniform_sphere(self) -> Vec3:
-        z = 1.0 - 2.0 * self.random()
-        r = math.sqrt(max(0.0, 1.0 - z * z))
-        phi = TAU * self.random()
-        return Vec3(r * math.cos(phi), z, r * math.sin(phi))
-
-    def uniform_disk(self) -> Vec2:
-        # Shirley-Chiu concentric disk mapping.
-        sx = 2.0 * self.random() - 1.0
-        sy = 2.0 * self.random() - 1.0
-        if sx == 0.0 and sy == 0.0:
-            return Vec2()
-        if abs(sx) > abs(sy):
-            radius = sx
-            theta = (PI / 4.0) * (sy / sx)
+    def commit(self, time0: float = 0.0, time1: float = 1.0) -> None:
+        from .bvh import BVHNode
+        self._lights = [p for p in self._primitives if p.material.is_emissive]
+        if self._primitives:
+            self._bvh = BVHNode.build(self._primitives, time0, time1)
         else:
-            radius = sy
-            theta = PI / 2.0 - (PI / 4.0) * (sx / sy)
-        return Vec2(radius * math.cos(theta), radius * math.sin(theta))
+            self._bvh = None
+
+    def hit(self, ray: Ray, t_min: float = 1.0e-5, t_max: float = math.inf) -> "HitRecord | None":
+        if self._bvh is None:
+            return None
+        return self._bvh.hit(ray, t_min, t_max)
+
+    def sample_light(
+        self, origin: Vec3, rng: RNG, time: float = 0.0
+    ) -> LightSample | None:
+        has_lights = bool(self._lights)
+        has_env = self.environment.enabled
+
+        if not has_lights and not has_env:
+            return None
+
+        if has_lights and has_env:
+            use_primitive = rng.random() < 0.5
+            mix_pdf = 0.5
+        elif has_lights:
+            use_primitive = True
+            mix_pdf = 1.0
+        else:
+            use_primitive = False
+            mix_pdf = 1.0
+
+        if use_primitive:
+            primitive = self._lights[int(rng.random() * len(self._lights)) % len(self._lights)]
+            sample = primitive.sample_surface(rng, time)
+            to_light = sample.point - origin
+            distance_sq = to_light.length_squared()
+            if distance_sq <= 0.0:
+                return None
+            distance = math.sqrt(distance_sq)
+            direction = to_light / distance
+            cosine = abs(sample.normal.dot(-direction))
+            if cosine <= 1.0e-10 or sample.pdf_area <= 0.0:
+                return None
+            pdf_primitive = sample.pdf_area * distance_sq / cosine / len(self._lights)
+            radiance = sample.material.emitted(sample.uv, sample.point, sample.normal.dot(-direction) >= 0.0)
+            return LightSample(direction, radiance, pdf_primitive * mix_pdf, distance)
+        else:
+            direction, radiance, pdf_env = self.environment.sample(rng)
+            if pdf_env <= 0.0:
+                return None
+            return LightSample(direction, radiance, pdf_env * mix_pdf, math.inf)
+
+    def light_pdf(
+        self, origin: Vec3, direction: Vec3, hit: "HitRecord | None"
+    ) -> float:
+        has_lights = bool(self._lights)
+        has_env = self.environment.enabled
+        if not has_lights and not has_env:
+            return 0.0
+
+        mix_weight = 0.5 if (has_lights and has_env) else 1.0
+        pdf = 0.0
+
+        if has_lights and hit is not None and hit.primitive in self._lights:
+            area = hit.primitive.surface_area()
+            if area > 0.0:
+                distance_sq = hit.t * hit.t
+                cosine = abs(hit.geom_normal.dot(-direction.normalized()))
+                if cosine > 1.0e-10:
+                    pdf += mix_weight * (distance_sq / (cosine * area)) / len(self._lights)
+
+        if has_env and hit is None:
+            pdf += mix_weight * self.environment.pdf(direction)
+
+        return pdf
+
+    def shadow_transmittance(
+        self, origin: Vec3, direction: Vec3, distance: float, time: float = 0.0
+    ) -> Vec3:
+        ray = Ray(origin, direction, time)
+        t_max = distance
+        limit = t_max
+        hit = self.hit(ray, 1.0e-5, limit)
+        if hit is not None:
+            # Opaque or semi-transparent blocker.
+            if hit.material.opacity >= 1.0:
+                return ZERO
+            transmittance = Vec3(1.0 - hit.material.opacity, 1.0 - hit.material.opacity, 1.0 - hit.material.opacity)
+            return transmittance
+        return Vec3(1.0, 1.0, 1.0)
